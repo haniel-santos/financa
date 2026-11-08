@@ -16,5 +16,7 @@ Ajustes: bancos em `BankNotificationService.kt`, regras de texto em `lib/parser.
 
 ## Atualziar o projeto
 git add .
+
 git commit -m "Descrição da atualização"
+
 git push
