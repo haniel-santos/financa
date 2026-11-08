@@ -14,7 +14,7 @@ Ajustes: bancos em `BankNotificationService.kt`, regras de texto em `lib/parser.
 2. Aba **Actions** > "Build APK" > aguarde ~5 min.
 3. Baixe o artefato `financas-apk`, extraia e instale o `app-release.apk` no celular.
 
-##Atualziar o projeto
+## Atualziar o projeto
 git add .
 git commit -m "Descrição da atualização"
 git push
