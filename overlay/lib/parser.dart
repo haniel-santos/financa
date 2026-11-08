@@ -10,8 +10,24 @@ class Tx {
       required this.category, required this.ts, required this.raw});
 }
 
-const categories = ['Alimentação', 'Transporte', 'Moradia', 'Saúde', 'Lazer',
-  'Compras', 'Assinaturas', 'Renda', 'Outros'];
+class SeedCat {
+  final String name, icon;
+  final int color;
+  const SeedCat(this.name, this.icon, this.color);
+}
+
+// Categorias iniciais (você pode editar, excluir e criar novas dentro do app).
+const seedCats = [
+  SeedCat('Alimentação', 'restaurant', 0xFFEF6C00),
+  SeedCat('Transporte', 'directions_car', 0xFF1E88E5),
+  SeedCat('Moradia', 'home', 0xFF6D4C41),
+  SeedCat('Saúde', 'favorite', 0xFFE53935),
+  SeedCat('Lazer', 'sports_esports', 0xFF8E24AA),
+  SeedCat('Compras', 'shopping_bag', 0xFFD81B60),
+  SeedCat('Assinaturas', 'subscriptions', 0xFF00897B),
+  SeedCat('Renda', 'attach_money', 0xFF43A047),
+  SeedCat('Outros', 'category', 0xFF757575),
+];
 
 // Regras padrão (palavra-chave -> categoria). O app aprende as suas ao corrigir.
 const defaultRules = {
@@ -25,12 +41,19 @@ const defaultRules = {
   'cinema': 'Lazer', 'bar ': 'Lazer',
 };
 
+double? parseMoney(String s) {
+  s = s.trim();
+  if (s.isEmpty) return null;
+  if (s.contains(',')) s = s.replaceAll('.', '').replaceAll(',', '.');
+  return double.tryParse(s);
+}
+
 String norm(String s) {
-  const from = 'áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ';
-  const to = 'aaaaaeeeeiiiiooooouuuucAAAAAEEEEIIIIOOOOOUUUUC';
+  const from = 'áàâãäéèêëíìîïóòôõöúùûüç';
+  const to = 'aaaaaeeeeiiiiooooouuuuc';
   var r = s.toLowerCase();
   for (var i = 0; i < from.length; i++) {
-    r = r.replaceAll(from[i].toLowerCase(), to[i].toLowerCase());
+    r = r.replaceAll(from[i], to[i]);
   }
   return r;
 }
