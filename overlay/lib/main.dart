@@ -3,12 +3,15 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'advisor_page.dart';
 import 'agenda_page.dart';
 import 'cat.dart';
 import 'db.dart';
 import 'goals.dart';
 import 'parser.dart';
+import 'plan_page.dart';
 import 'settings.dart';
+import 'tx_dialog.dart';
 
 const posColor = Color(0xFF26A69A);
 const negColor = Color(0xFFEF5350);
@@ -166,47 +169,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   }
 
   Future<void> addManual() async {
-    final valor = TextEditingController(), desc = TextEditingController();
-    var income = false;
-    var catSel = 'Outros';
-    final choices = cats.where((c) => c.name != 'Renda').toList();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, set) => AlertDialog(
-          title: const Text('Novo lançamento'),
-          content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: valor, keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Valor (ex: 25,90)')),
-              TextField(controller: desc, decoration: const InputDecoration(labelText: 'Descrição')),
-              if (!income)
-                DropdownButton<String>(
-                  isExpanded: true,
-                  value: catSel,
-                  items: [for (final cc in choices) DropdownMenuItem(value: cc.name, child: Text(cc.name))],
-                  onChanged: (v) => set(() => catSel = v ?? catSel),
-                ),
-              SwitchListTile(title: const Text('Entrada'), value: income, onChanged: (v) => set(() => income = v)),
-            ]),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Salvar')),
-          ],
-        ),
-      ),
-    );
-    final v = parseMoney(valor.text);
-    if (ok == true && v != null && v > 0) {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      await DB.insert(
-        Tx(amount: v, income: income, merchant: desc.text.isEmpty ? 'Manual' : desc.text,
-            category: 'Outros', ts: now, raw: 'manual|$now|${desc.text}|$v'),
-        category: income ? 'Renda' : catSel,
-      );
-      sync();
-    }
+    if (await addTxDialog(context, cats)) sync();
   }
 
   Widget catRow(String name, double v, double total, double? limit) {
@@ -303,6 +266,36 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       body: RefreshIndicator(
         onRefresh: sync,
         child: ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 90), children: [
+          Card(
+            color: cs.primaryContainer,
+            child: ListTile(
+              leading: Icon(Icons.account_balance_wallet, color: cs.onPrimaryContainer),
+              title: Text('Planejamento do mês',
+                  style: TextStyle(color: cs.onPrimaryContainer, fontWeight: FontWeight.bold)),
+              subtitle: Text('Renda, contas fixas, quanto guardar e quanto pode gastar',
+                  style: TextStyle(color: cs.onPrimaryContainer)),
+              trailing: Icon(Icons.chevron_right, color: cs.onPrimaryContainer),
+              onTap: () async {
+                await Navigator.push(c, MaterialPageRoute(builder: (_) => PlanPage(month: month)));
+                sync();
+              },
+            ),
+          ),
+          Card(
+            color: cs.secondaryContainer,
+            child: ListTile(
+              leading: Icon(Icons.psychology, color: cs.onSecondaryContainer),
+              title: Text('Conselheiro financeiro',
+                  style: TextStyle(color: cs.onSecondaryContainer, fontWeight: FontWeight.bold)),
+              subtitle: Text('Diagnóstico do mês e plano para atingir suas metas',
+                  style: TextStyle(color: cs.onSecondaryContainer)),
+              trailing: Icon(Icons.chevron_right, color: cs.onSecondaryContainer),
+              onTap: () async {
+                await Navigator.push(c, MaterialPageRoute(builder: (_) => const AdvisorPage()));
+                sync();
+              },
+            ),
+          ),
           if (!access)
             Card(
               color: cs.tertiaryContainer,
@@ -433,7 +426,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                   child: Icon(catOf(t.category).iconV, color: Colors.white, size: 20),
                 ),
                 title: Text(t.merchant),
-                subtitle: Text('${t.category} • ${DateFormat('dd/MM HH:mm').format(DateTime.fromMillisecondsSinceEpoch(t.ts))}'),
+                subtitle: Text('${t.category} • ${DateFormat('dd/MM HH:mm').format(DateTime.fromMillisecondsSinceEpoch(t.ts))}${t.cash ? ' • dinheiro' : ''}'),
                 trailing: Text((t.income ? '+ ' : '- ') + money.format(t.amount),
                     style: TextStyle(color: t.income ? posColor : negColor)),
                 onTap: () => pickCategory(t),

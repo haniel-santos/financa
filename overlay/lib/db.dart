@@ -9,7 +9,8 @@ class Goal {
   final double target;
   final double saved;
   final int? deadline; // ms desde epoch
-  Goal(this.id, this.name, this.target, this.saved, this.deadline);
+  final int? created; // ms desde epoch (null em metas antigas)
+  Goal(this.id, this.name, this.target, this.saved, this.deadline, this.created);
   double get pct => target <= 0 ? 0 : (saved / target).clamp(0, 1).toDouble();
 }
 
@@ -32,6 +33,12 @@ class Rec {
   }
 }
 
+class FixedItem {
+  final Rec rec;
+  final bool paid;
+  FixedItem(this.rec, this.paid);
+}
+
 class Pend {
   final Rec rec;
   final int idx;
@@ -40,9 +47,10 @@ class Pend {
 }
 
 const _goalsSql = 'CREATE TABLE goals(id INTEGER PRIMARY KEY, name TEXT, target REAL, '
-    'saved REAL DEFAULT 0, deadline INTEGER)';
+    'saved REAL DEFAULT 0, deadline INTEGER, created INTEGER)';
 const _catsSql = 'CREATE TABLE categories(name TEXT PRIMARY KEY, icon TEXT, color INTEGER, limit_amount REAL)';
 const _settingsSql = 'CREATE TABLE settings(k TEXT PRIMARY KEY, v TEXT)';
+const _depSql = 'CREATE TABLE deposits(id INTEGER PRIMARY KEY, goal_id INTEGER, amount REAL, ts INTEGER)';
 const _recSql = 'CREATE TABLE recurring(id INTEGER PRIMARY KEY, name TEXT, amount REAL, day INTEGER, '
     'category TEXT, income INTEGER, auto INTEGER, start INTEGER, total INTEGER)';
 
@@ -57,16 +65,17 @@ class DB {
   static Database? _d;
   static Future<Database> get db async => _d ??= await openDatabase(
         join(await getDatabasesPath(), 'fin.db'),
-        version: 4,
+        version: 6,
         onCreate: (d, _) async {
           await d.execute('CREATE TABLE tx(id INTEGER PRIMARY KEY, hash TEXT UNIQUE, amount REAL, '
-              'income INTEGER, merchant TEXT, category TEXT, ts INTEGER, raw TEXT)');
+              'income INTEGER, merchant TEXT, category TEXT, ts INTEGER, raw TEXT, cash INTEGER DEFAULT 0)');
           await d.execute('CREATE TABLE rules(keyword TEXT PRIMARY KEY, category TEXT)');
           await d.execute(_goalsSql);
           await d.execute(_catsSql);
           await d.execute(_settingsSql);
           await _seed(d);
           await d.execute(_recSql);
+          await d.execute(_depSql);
         },
         onUpgrade: (d, old, _) async {
           if (old < 2) await d.execute(_goalsSql);
@@ -76,6 +85,15 @@ class DB {
             await _seed(d);
           }
           if (old < 4) await d.execute(_recSql);
+          if (old < 5) {
+            await d.execute('ALTER TABLE tx ADD COLUMN cash INTEGER DEFAULT 0');
+            await d.execute(_depSql);
+          }
+          if (old < 6) {
+            try {
+              await d.execute('ALTER TABLE goals ADD COLUMN created INTEGER');
+            } catch (_) {}
+          }
         },
       );
 
@@ -160,6 +178,7 @@ class DB {
     await d.insert('tx', {
       'hash': '${t.ts}|${t.raw}', 'amount': t.amount, 'income': t.income ? 1 : 0,
       'merchant': t.merchant, 'category': t.category, 'ts': t.ts, 'raw': t.raw,
+      'cash': t.cash ? 1 : 0,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
@@ -170,7 +189,8 @@ class DB {
     final rows = await d.query('tx', where: 'ts >= ? AND ts < ?', whereArgs: [a, b], orderBy: 'ts DESC');
     return rows.map((r) => Tx(id: r['id'] as int, amount: r['amount'] as double,
         income: r['income'] == 1, merchant: r['merchant'] as String,
-        category: r['category'] as String, ts: r['ts'] as int, raw: r['raw'] as String)).toList();
+        category: r['category'] as String, ts: r['ts'] as int, raw: r['raw'] as String,
+        cash: r['cash'] == 1)).toList();
   }
 
   /// Corrige a categoria e aprende: próximos lançamentos desse local já entram certos.
@@ -188,16 +208,20 @@ class DB {
     final d = await db;
     final rows = await d.query('goals', orderBy: 'id DESC');
     return rows.map((r) => Goal(r['id'] as int, r['name'] as String, (r['target'] as num).toDouble(),
-        (r['saved'] as num).toDouble(), r['deadline'] as int?)).toList();
+        (r['saved'] as num).toDouble(), r['deadline'] as int?, r['created'] as int?)).toList();
   }
 
   static Future<void> addGoal(String name, double target, DateTime? deadline) async =>
       (await db).insert('goals', {
         'name': name, 'target': target, 'saved': 0, 'deadline': deadline?.millisecondsSinceEpoch,
+        'created': DateTime.now().millisecondsSinceEpoch,
       });
 
-  static Future<void> addToGoal(int id, double delta) async => (await db).rawUpdate(
-      'UPDATE goals SET saved = MAX(0, saved + ?) WHERE id = ?', [delta, id]);
+  static Future<void> addToGoal(int id, double delta) async {
+    final d = await db;
+    await d.rawUpdate('UPDATE goals SET saved = MAX(0, saved + ?) WHERE id = ?', [delta, id]);
+    await d.insert('deposits', {'goal_id': id, 'amount': delta, 'ts': DateTime.now().millisecondsSinceEpoch});
+  }
 
   static Future<void> deleteGoal(int id) async =>
       (await db).delete('goals', where: 'id = ?', whereArgs: [id]);
@@ -287,4 +311,51 @@ class DB {
 
   static Future<void> payRec(Pend p) async =>
       _insertRec(await db, p.rec, p.idx, DateTime.now().millisecondsSinceEpoch);
+
+  // ---- Planejamento ----
+  /// Contas fixas (saídas) válidas no mês, com status de pagas.
+  static Future<List<FixedItem>> fixedForMonth(int idx) async {
+    final d = await db;
+    final out = <FixedItem>[];
+    for (final r in await recs()) {
+      if (r.income) continue;
+      if (idx < r.start) continue;
+      if (r.total != null && idx - r.start + 1 > r.total!) continue;
+      out.add(FixedItem(r, await _covered(d, r, idx)));
+    }
+    out.sort((a, b) => a.rec.day.compareTo(b.rec.day));
+    return out;
+  }
+
+  /// Total guardado nas metas no mês (depósitos menos retiradas).
+  static Future<double> depositsSum(DateTime m) async {
+    final a = DateTime(m.year, m.month).millisecondsSinceEpoch;
+    final b = DateTime(m.year, m.month + 1).millisecondsSinceEpoch;
+    final r = await (await db).rawQuery(
+        'SELECT COALESCE(SUM(amount), 0) AS s FROM deposits WHERE ts >= ? AND ts < ?', [a, b]);
+    return (r.first['s'] as num).toDouble();
+  }
+
+  /// Entradas menos saídas em dinheiro físico (todas as datas).
+  static Future<double> cashDelta() async {
+    final r = await (await db).rawQuery(
+        'SELECT COALESCE(SUM(CASE WHEN income = 1 THEN amount ELSE -amount END), 0) AS s '
+        'FROM tx WHERE cash = 1');
+    return (r.first['s'] as num).toDouble();
+  }
+
+  /// Média mensal depositada na meta (janela de até 3 meses desde a criação).
+  static Future<double> goalPace(Goal g) async {
+    final now = DateTime.now();
+    var months = 3.0;
+    if (g.created != null) {
+      final days = now.difference(DateTime.fromMillisecondsSinceEpoch(g.created!)).inDays;
+      months = (days / 30.4).clamp(1.0, 3.0).toDouble();
+    }
+    final since = now.subtract(Duration(days: (months * 30.4).round())).millisecondsSinceEpoch;
+    final r = await (await db).rawQuery(
+        'SELECT COALESCE(SUM(amount), 0) AS s FROM deposits WHERE goal_id = ? AND ts >= ?',
+        [g.id, since]);
+    return (r.first['s'] as num).toDouble() / months;
+  }
 }

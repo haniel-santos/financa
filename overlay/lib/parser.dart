@@ -6,8 +6,9 @@ class Tx {
   String category;
   final int ts;
   final String raw;
+  final bool cash; // dinheiro físico
   Tx({this.id, required this.amount, required this.income, required this.merchant,
-      required this.category, required this.ts, required this.raw});
+      required this.category, required this.ts, required this.raw, this.cash = false});
 }
 
 class SeedCat {
